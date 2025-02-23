@@ -1,18 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from jose import JWTError, jwt
 from auth import User, SessionDept, oauth2_scheme, check_user, decode_token
 from models import UserModel, ReferralCodeModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from  typing import Annotated
 from password_security import hash_password
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import selectinload
-
+import redis 
 
 router = APIRouter()
 
-
+redis_client = redis.Redis(host='localhost', port=6379, db=0)
 
 
 SECRET_KEY = '2nXGNMkA_wye3VgbduZtd1YvttLXUrOF4p-qYxQr4lY='
@@ -72,7 +72,7 @@ async def decode_referral_code(code: str, db: SessionDept):
 
 
 
-async def registration_by_referral(user: User, referral_code: str, db: SessionDept):
+async def registration_by_referral(user: User, referral_code: Annotated[str, Body()], db: SessionDept):
 
     user_object = await check_user(email=user.email, db=db)
 
@@ -97,13 +97,14 @@ async def registration_by_referral(user: User, referral_code: str, db: SessionDe
 
         await db.commit()
     except Exception as exept:
+        print(exept)
         return None
 
     return True
 
 
 @router.post('/registration_like_referral')
-async def referral_register(user: User, referral_code: str, db: SessionDept):
+async def referral_register(user: User, referral_code: Annotated[str, Body()], db: SessionDept):
 
     referral_register_object = await registration_by_referral(user=user, referral_code=referral_code, db=db)
 
@@ -136,11 +137,35 @@ async def create_my_code(me: Annotated[str, Depends(decode_token)], db: SessionD
         ))
 
         await db.commit()
+        
+        with redis_client as r:
+            r.set(f'{me.email}', new_code)
 
     except Exception as exept:
         return {"Message:" "Error"}
     
     return {"Referral_code": new_code}
+
+
+@router.post('/delete_my_code')
+async def delete_my_code(me: Annotated[str, Depends(decode_token)], db: SessionDept):
+
+    my_referral_code = me.referral_code
+
+    if my_referral_code:
+        me.referral_code = None
+        
+        query = delete(ReferralCodeModel).where(ReferralCodeModel.owner_id==me.id)
+        await db.execute(query)
+        await db.commit()
+
+        with redis_client as r:
+            r.delete(f"{me.email}")
+        return {"Message": "Referral code delete successfully"}
+    
+    return {"Message": "Referral code do not exist"}
+
+
 
 @router.get('/get_referrals/{user_id}')
 async def get_referrals(user_id: int, db: SessionDept):
@@ -149,20 +174,42 @@ async def get_referrals(user_id: int, db: SessionDept):
 
     result = await db.execute(query)  
         
-    user_object = result.scalar()     
+    user_object = result.scalar_one_or_none()
+
+
+    if user_object:     
+        return {"Referrers": user_object.referrals}
     
-    return {"Referrers": user_object.referrals}
+    return {"Message": "Incorrect id"}  
+
 
 
 
 @router.get("/get_code_by_email/{email}")
 async def get_referrer(email: str, db: SessionDept):
 
-    query = select(UserModel).where(UserModel.email==email)
+    with redis_client as r:
+        if r.exists(f'{email}'):
+            referral_code = r.get(f"{email}")
+            return {"Referral_code": referral_code.decode('utf-8')}
 
-    referrer_code =  await db.execute(query)
 
-    return {"Referral_code": referrer_code.scalar_one_or_none().referral_code}
+        query = select(UserModel).where(UserModel.email==email)
+
+        result =  await db.execute(query)
+        user_object = result.scalar_one_or_none()
+
+
+        if user_object:
+            referral_code = user_object.referral_code
+            if referral_code:
+                r.set(f'{email}', referral_code)
+                return {"Referral_code": referral_code}
+
+            return {"Message": "Referral code do not exist"}
+            
+        return {"Message": "Incorrect email"}
+
 
 
 

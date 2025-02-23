@@ -7,8 +7,8 @@ import uvicorn
 
 app = FastAPI()
 
-app.include_router(auth_router)
-app.include_router(referral_router)
+app.include_router(auth_router, tags=['jwt authorization system'])
+app.include_router(referral_router, tags=['referral system'])
 
 if __name__ == "__main__":
     uvicorn.run(

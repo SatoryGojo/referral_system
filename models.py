@@ -18,7 +18,7 @@ class UserModel(AbstractModel):
     referral_code: Mapped[str|None] = mapped_column(unique=True, default=None)
 
     
-    referred_by: Mapped[int|None] = mapped_column(ForeignKey('users.id'), unique=True)
+    referred_by: Mapped[int|None] = mapped_column(ForeignKey('users.id'), default=None, unique=False)
 
     
     referrals: Mapped[list["UserModel"]] = relationship("UserModel", remote_side=[referred_by], back_populates='referrer')      
